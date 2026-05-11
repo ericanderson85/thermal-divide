@@ -1,0 +1,18 @@
+{
+  "uhi": {
+    "mode": "tile",
+    "tileUrl": ""
+  },
+  "day3pm": {
+    "mode": "tile",
+    "tileUrl": ""
+  },
+  "night3am": {
+    "mode": "tile",
+    "tileUrl": ""
+  },
+  "duration": {
+    "mode": "tile",
+    "tileUrl": ""
+  }
+}
