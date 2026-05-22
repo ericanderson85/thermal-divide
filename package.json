@@ -3,7 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "prepare:heat": "node scripts/approximate_heat_tiles.js",
     "prepare:data": "python3 scripts/prepare_data.py",
     "dev": "vite",
     "build": "npm run prepare:data && vite build",
@@ -11,10 +10,7 @@
   },
   "dependencies": {
     "d3": "^7.9.0",
-    "jpeg-js": "^0.4.4",
     "leaflet": "^1.9.4",
-    "pngjs": "^7.0.0",
-    "proj4": "^2.20.8",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
   },

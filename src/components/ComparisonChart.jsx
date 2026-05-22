@@ -1,95 +1,89 @@
 import { useEffect, useRef } from 'react'
 import * as d3 from 'd3'
-import { COMPARISON_OPTIONS, VIEW_PRESETS } from '../config/views'
 import {
+  formatCurrency,
   formatPercent,
   formatPercentPoints,
-  formatValueForView,
+  formatTemperature,
 } from '../utils/formatters'
 
-const MARGIN = { top: 18, right: 18, bottom: 52, left: 70 }
+const MARGIN = { top: 24, right: 20, bottom: 62, left: 72 }
 const WIDTH = 520
-const HEIGHT = 340
+const HEIGHT = 310
 
-function formatMetricValue(metric, value) {
-  const view = VIEW_PRESETS[metric]
-  return formatValueForView(view, value)
-}
-
-function chartDescription(metric) {
-  switch (metric) {
-    case 'day3pm':
-      return 'Hotter daytime neighborhoods rise to the top, while point color still shows poverty rate.'
-    case 'night3am':
-      return 'Nighttime heat emphasizes neighborhoods that do not cool effectively after sunset.'
-    case 'duration':
-      return 'Longer heat duration points higher on the chart, helping separate short spikes from persistent exposure.'
-    case 'uhi':
-    default:
-      return 'Urban heat island intensity is compared directly against canopy, while point color still shows poverty rate.'
+function axisFormatter(kind) {
+  if (kind === 'share') {
+    return (value) => `${Math.round(value * 100)}%`
   }
+  if (kind === 'currency') {
+    return (value) => `$${Math.round(value / 1000)}k`
+  }
+  if (kind === 'temperature') {
+    return (value) => `${Math.round(value)}°`
+  }
+  if (kind === 'percentPoints') {
+    return (value) => `${Math.round(value)}%`
+  }
+  return (value) => value
 }
 
-function rankHotspots(points) {
-  const hottest = [...points]
-    .sort((left, right) => right.y - left.y)
-    .slice(0, 3)
-  const coolestGreenest = [...points]
-    .sort((left, right) => {
-      if (right.canopy !== left.canopy) {
-        return right.canopy - left.canopy
-      }
-      return left.y - right.y
-    })
-    .slice(0, 3)
-  return { hottest, coolestGreenest }
+function formatMetric(kind, value) {
+  if (kind === 'share') {
+    return formatPercent(value)
+  }
+  if (kind === 'currency') {
+    return formatCurrency(value)
+  }
+  if (kind === 'temperature') {
+    return formatTemperature(value)
+  }
+  if (kind === 'percentPoints') {
+    return formatPercentPoints(value, 1)
+  }
+  return value == null ? 'No data' : String(value)
+}
+
+function paddedDomain(values, kind) {
+  const [min, max] = d3.extent(values)
+  if (min == null || max == null) {
+    return [0, 1]
+  }
+  const span = max - min || 1
+  const padding = span * 0.08
+  const lower = kind === 'share' || kind === 'percentPoints' ? Math.max(0, min - padding) : min - padding
+  return [lower, max + padding]
 }
 
 function linearRegression(points) {
   if (points.length < 2) {
     return null
   }
-  const meanX = d3.mean(points, (point) => point.canopy)
+  const meanX = d3.mean(points, (point) => point.x)
   const meanY = d3.mean(points, (point) => point.y)
-  const numerator = d3.sum(points, (point) => (point.canopy - meanX) * (point.y - meanY))
-  const denominator = d3.sum(points, (point) => (point.canopy - meanX) ** 2)
+  const numerator = d3.sum(points, (point) => (point.x - meanX) * (point.y - meanY))
+  const denominator = d3.sum(points, (point) => (point.x - meanX) ** 2)
   if (!denominator) {
     return null
   }
   const slope = numerator / denominator
   const intercept = meanY - slope * meanX
-  const xExtent = d3.extent(points, (point) => point.canopy)
+  const xExtent = d3.extent(points, (point) => point.x)
   return xExtent.map((x) => [x, intercept + slope * x])
 }
 
-export default function ComparisonChart({
-  neighborhoods,
-  heatStatsAvailable,
-  activeName,
-  onSelectName,
-  comparisonMetric,
-  onComparisonMetricChange,
-}) {
+function RelationshipPlot({ config, neighborhoods, activeName, onSelectName }) {
   const svgRef = useRef(null)
   const pointHandlerRef = useRef(onSelectName)
   pointHandlerRef.current = onSelectName
 
-  const metric = heatStatsAvailable ? comparisonMetric : 'income'
-  const metricView = VIEW_PRESETS[metric]
-
   const points = neighborhoods
-    .map((feature) => {
-      const props = feature.properties
-      return {
-        name: props.name,
-        canopy: props.canopy_pct,
-        y: heatStatsAvailable ? props[metricView.metric] : props.median_household_income,
-        color: props.poverty_rate,
-      }
-    })
-    .filter((point) => point.canopy != null && point.y != null)
-
-  const ranked = rankHotspots(points)
+    .map((feature) => ({
+      name: feature.properties.name,
+      x: feature.properties[config.xMetric],
+      y: feature.properties[config.yMetric],
+      properties: feature.properties,
+    }))
+    .filter((point) => point.x != null && point.y != null)
 
   useEffect(() => {
     const svg = d3.select(svgRef.current)
@@ -99,92 +93,52 @@ export default function ComparisonChart({
       return
     }
 
-    const xExtent = d3.extent(points, (point) => point.canopy)
-    const yExtent = d3.extent(points, (point) => point.y)
-    const colorExtent = d3.extent(
-      points.filter((point) => point.color != null),
-      (point) => point.color,
-    )
-
     const xScale = d3
       .scaleLinear()
-      .domain([Math.max(0, xExtent[0] - 2), xExtent[1] + 2])
+      .domain(paddedDomain(points.map((point) => point.x), config.xKind))
+      .nice()
       .range([MARGIN.left, WIDTH - MARGIN.right])
 
-    const yPadding = heatStatsAvailable && metric === 'duration' ? 2 : heatStatsAvailable ? 0.8 : 5000
     const yScale = d3
       .scaleLinear()
-      .domain([Math.max(0, yExtent[0] - yPadding), yExtent[1] + yPadding])
+      .domain(paddedDomain(points.map((point) => point.y), config.yKind))
       .nice()
       .range([HEIGHT - MARGIN.bottom, MARGIN.top])
-
-    const colorScale = d3
-      .scaleSequential(colorExtent, d3.interpolateYlOrRd)
-      .unknown('#cfd5dd')
 
     const root = svg
       .attr('viewBox', `0 0 ${WIDTH} ${HEIGHT}`)
       .attr('role', 'img')
-      .attr(
-        'aria-label',
-        heatStatsAvailable
-          ? `Scatterplot comparing neighborhood canopy and ${metricView.label}.`
-          : 'Scatterplot comparing neighborhood canopy and income.',
-      )
+      .attr('aria-label', config.title)
 
     root
       .append('g')
       .attr('transform', `translate(0,${HEIGHT - MARGIN.bottom})`)
-      .call(d3.axisBottom(xScale).ticks(6))
-      .call((group) => group.select('.domain').attr('stroke', '#7d8797'))
-      .call((group) => group.selectAll('line').attr('stroke', '#d4dae2'))
-      .call((group) => group.selectAll('text').attr('fill', '#506072'))
+      .call(d3.axisBottom(xScale).ticks(5).tickFormat(axisFormatter(config.xKind)))
+      .call((group) => group.select('.domain').attr('stroke', '#83909d'))
+      .call((group) => group.selectAll('line').attr('stroke', '#d8dee4'))
+      .call((group) =>
+        group.selectAll('text').attr('fill', '#506072').attr('font-size', 14),
+      )
 
     root
       .append('g')
       .attr('transform', `translate(${MARGIN.left},0)`)
-      .call(
-        d3.axisLeft(yScale).ticks(6).tickFormat((value) => {
-          if (!heatStatsAvailable) {
-            return `$${(value / 1000).toFixed(0)}k`
-          }
-          if (metric === 'duration') {
-            return `${value.toFixed(0)}h`
-          }
-          return `${value.toFixed(0)}°`
-        }),
+      .call(d3.axisLeft(yScale).ticks(5).tickFormat(axisFormatter(config.yKind)))
+      .call((group) => group.select('.domain').attr('stroke', '#83909d'))
+      .call((group) => group.selectAll('line').attr('stroke', '#d8dee4'))
+      .call((group) =>
+        group.selectAll('text').attr('fill', '#506072').attr('font-size', 14),
       )
-      .call((group) => group.select('.domain').attr('stroke', '#7d8797'))
-      .call((group) => group.selectAll('line').attr('stroke', '#d4dae2'))
-      .call((group) => group.selectAll('text').attr('fill', '#506072'))
-
-    root
-      .append('text')
-      .attr('x', WIDTH / 2)
-      .attr('y', HEIGHT - 10)
-      .attr('text-anchor', 'middle')
-      .attr('fill', '#334155')
-      .attr('font-size', 12)
-      .text('Tree canopy (%)')
-
-    root
-      .append('text')
-      .attr('transform', `translate(18,${HEIGHT / 2}) rotate(-90)`)
-      .attr('text-anchor', 'middle')
-      .attr('fill', '#334155')
-      .attr('font-size', 12)
-      .text(heatStatsAvailable ? metricView.label : 'Median household income')
 
     const regressionData = linearRegression(points)
-
     if (regressionData?.length) {
       root
         .append('path')
         .datum(regressionData)
         .attr('fill', 'none')
-        .attr('stroke', '#203445')
+        .attr('stroke', '#24353f')
         .attr('stroke-width', 2)
-        .attr('stroke-dasharray', '6 6')
+        .attr('stroke-dasharray', '6 5')
         .attr(
           'd',
           d3
@@ -199,13 +153,13 @@ export default function ComparisonChart({
       .selectAll('circle')
       .data(points)
       .join('circle')
-      .attr('cx', (point) => xScale(point.canopy))
+      .attr('cx', (point) => xScale(point.x))
       .attr('cy', (point) => yScale(point.y))
-      .attr('r', (point) => (point.name === activeName ? 8 : 5.5))
-      .attr('fill', (point) => colorScale(point.color))
-      .attr('stroke', (point) => (point.name === activeName ? '#111827' : '#fff7ed'))
-      .attr('stroke-width', (point) => (point.name === activeName ? 2.5 : 1.4))
-      .attr('opacity', 0.94)
+      .attr('r', (point) => (point.name === activeName ? 7.5 : 5.2))
+      .attr('fill', (point) => (point.name === activeName ? '#c75d3e' : '#6f8792'))
+      .attr('stroke', '#fff')
+      .attr('stroke-width', (point) => (point.name === activeName ? 2.3 : 1.4))
+      .attr('opacity', (point) => (activeName && point.name !== activeName ? 0.55 : 0.9))
       .style('cursor', 'pointer')
       .on('click', (_, point) => {
         pointHandlerRef.current?.(point.name)
@@ -213,78 +167,98 @@ export default function ComparisonChart({
       .append('title')
       .text(
         (point) =>
-          `${point.name}\nCanopy: ${formatPercentPoints(point.canopy, 1)}\nValue: ${formatMetricValue(metric, point.y)}\nPoverty: ${formatPercent(point.color)}`,
+          `${point.name}\n${config.xLabel}: ${formatMetric(config.xKind, point.x)}\n${config.yLabel}: ${formatMetric(config.yKind, point.y)}`,
       )
-  }, [activeName, heatStatsAvailable, metric, metricView, points])
+
+    root
+      .append('text')
+      .attr('x', WIDTH / 2)
+      .attr('y', HEIGHT - 10)
+      .attr('text-anchor', 'middle')
+      .attr('fill', '#334155')
+      .attr('font-size', 16)
+      .attr('font-weight', 650)
+      .text(config.xLabel)
+
+    root
+      .append('text')
+      .attr('transform', `translate(17,${HEIGHT / 2}) rotate(-90)`)
+      .attr('text-anchor', 'middle')
+      .attr('fill', '#334155')
+      .attr('font-size', 16)
+      .attr('font-weight', 650)
+      .text(config.yLabel)
+  }, [activeName, config, points])
 
   return (
-    <section className="chart-card">
+    <div className="relationship-plot">
+      <h4>{config.title}</h4>
+      <svg ref={svgRef} className="relationship-svg" />
+    </div>
+  )
+}
+
+export default function ComparisonChart({
+  embedded = false,
+  neighborhoods,
+  heatStatsAvailable,
+  activeName,
+  onSelectName,
+}) {
+  const configs = heatStatsAvailable
+    ? [
+        {
+          id: 'canopy-heat',
+          title: 'Tree canopy vs heat island',
+          xMetric: 'canopy_pct',
+          xKind: 'percentPoints',
+          xLabel: 'Tree canopy',
+          yMetric: 'uhi_mean_f',
+          yKind: 'temperature',
+          yLabel: 'Heat island',
+        },
+        {
+          id: 'poverty-heat',
+          title: 'Poverty rate vs heat island',
+          xMetric: 'poverty_rate',
+          xKind: 'share',
+          xLabel: 'Poverty rate',
+          yMetric: 'uhi_mean_f',
+          yKind: 'temperature',
+          yLabel: 'Heat island',
+        },
+      ]
+    : [
+        {
+          id: 'income-canopy',
+          title: 'Income vs tree canopy',
+          xMetric: 'median_household_income',
+          xKind: 'currency',
+          xLabel: 'Median income',
+          yMetric: 'canopy_pct',
+          yKind: 'percentPoints',
+          yLabel: 'Tree canopy',
+        },
+      ]
+
+  return (
+    <div className={embedded ? 'relationships-inline' : 'chart-card'}>
       <div className="chart-copy">
-        <p className="eyebrow">Comparison</p>
-        <div className="chart-header">
-          <div>
-            <h3>{heatStatsAvailable ? 'Canopy against heat' : 'Canopy versus income'}</h3>
-            <p>{heatStatsAvailable ? chartDescription(metric) : 'The chart falls back to income only when heat summaries are missing.'}</p>
-          </div>
-          {heatStatsAvailable ? (
-            <div className="metric-toggle" role="tablist" aria-label="Heat comparison metric">
-              {COMPARISON_OPTIONS.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={`metric-pill ${metric === option.value ? 'active' : ''}`}
-                  onClick={() => onComparisonMetricChange(option.value)}
-                >
-                  {option.value === 'day3pm'
-                    ? '3PM'
-                    : option.value === 'night3am'
-                      ? '3AM'
-                      : option.value === 'duration'
-                        ? 'Duration'
-                        : 'UHI'}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </div>
+        <p className="eyebrow">Relationships</p>
+        <h3>Neighborhood comparisons</h3>
       </div>
 
-      {points.length ? (
-        <>
-          <svg ref={svgRef} className="comparison-svg" />
-          <div className="chart-insights">
-            <div className="insight-block">
-              <span className="insight-label">Highest exposure</span>
-              <ul className="insight-list">
-                {ranked.hottest.map((point) => (
-                  <li key={`hot-${point.name}`}>
-                    <strong>{point.name}</strong>
-                    <span>{formatMetricValue(metric, point.y)}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div className="insight-block">
-              <span className="insight-label">More canopy, lower heat</span>
-              <ul className="insight-list">
-                {ranked.coolestGreenest.map((point) => (
-                  <li key={`cool-${point.name}`}>
-                    <strong>{point.name}</strong>
-                    <span>
-                      {formatPercentPoints(point.canopy, 1)} canopy
-                      {heatStatsAvailable ? `, ${formatMetricValue(metric, point.y)}` : ''}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        </>
-      ) : (
-        <div className="chart-empty">
-          No comparison points are available with the current dataset.
-        </div>
-      )}
-    </section>
+      <div className="relationship-grid">
+        {configs.map((config) => (
+          <RelationshipPlot
+            key={config.id}
+            config={config}
+            neighborhoods={neighborhoods}
+            activeName={activeName}
+            onSelectName={onSelectName}
+          />
+        ))}
+      </div>
+    </div>
   )
 }

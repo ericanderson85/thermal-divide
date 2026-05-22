@@ -4,9 +4,7 @@ from __future__ import annotations
 import json
 import math
 import re
-import subprocess
 import zipfile
-from collections import defaultdict
 from pathlib import Path
 from typing import Iterable
 import xml.etree.ElementTree as ET
@@ -18,42 +16,18 @@ PUBLIC_DATA_DIR = ROOT / "public" / "data"
 BOUNDARIES_PATH = DATA_DIR / "geographic-boundaries" / "neighborhoods.geojson"
 OPEN_SPACE_PATH = DATA_DIR / "geographic-boundaries" / "open-space.geojson"
 CANOPY_PATH = DATA_DIR / "tree-canopy-assessment" / "NBHD_Planning_wAP24_Land_Tree_Metrics.geojson"
-VULNERABILITY_PATH = DATA_DIR / "social-vulnerability" / "Climate_Ready_Boston_Social_Vulnerability.geojson"
-ACS_PATH = DATA_DIR / "social-vulnerability" / "2015-2019_neighborhood_tables_2021.12.21.xlsm"
+ACS_PATH = DATA_DIR / "acs" / "2015-2019_neighborhood_tables_2021.12.21.xlsm"
 HEAT_APPROX_PATH = DATA_DIR / "extreme-heat" / "neighborhood_heat_approx.geojson"
 
 HEAT_LAYER_CONFIG = {
     "uhi": {
-        "package": DATA_DIR / "extreme-heat" / "Urban Heat Island Intensity (UHII) Index _CRB Heat Plan.lpk",
         "portal_item_id": "a49befcba14b16ad",
         "service_item_id": "d2f0f365ec9d4609836534c970ce2ab4",
         "service_name": "Test_Symbology_UHII_WTL1",
         "label": "Urban Heat Island Intensity",
     },
-    "day3pm": {
-        "package": DATA_DIR / "extreme-heat" / "Daytime Air Temperature (3PM)_CRB Heat Plan.lpk",
-        "portal_item_id": "a3c0bcba3e7552a2",
-        "service_item_id": None,
-        "service_name": "Ta_3pm_cb_prj_city_tif_WTL1",
-        "label": "Daytime Air Temperature (3PM)",
-    },
-    "night3am": {
-        "package": DATA_DIR / "extreme-heat" / "Nighttime Air Temperature (3AM)_CRB Heat Plan.lpk",
-        "portal_item_id": "a2e3ba225a8127b8",
-        "service_item_id": None,
-        "service_name": "nighttime_temp_test_WTL1",
-        "label": "Nighttime Air Temperature (3AM)",
-    },
-    "duration": {
-        "package": DATA_DIR / "extreme-heat" / "Heat Event Duration_CRB Heat Plan.lpk",
-        "portal_item_id": None,
-        "service_item_id": None,
-        "service_name": "Heat_Event_Duration_CRB_Heat_Resilience_Study_WTL1",
-        "label": "Heat Event Duration",
-    },
 }
 
-HEAT_TILE_URLS_PATH = ROOT / "heat-layer-urls.json"
 HEAT_SERVICE_ROOT = "https://tiles.arcgis.com/tiles/sFnw0xNflSi8J0uh/arcgis/rest/services"
 MISSING_ACS_NAMES = {"Bay Village", "Chinatown", "Harbor Islands", "Leather District"}
 ACS_SKIP_ROWS = {
@@ -191,34 +165,13 @@ def parse_acs_metrics() -> dict[str, dict]:
             continue
         entry = upsert(name)
         entry["median_household_income"] = round_or_none(to_float(row.get("B")), 1)
-        entry["households_total"] = round_or_none(to_float(row.get("C")), 0)
-
-    for row in workbook.sheet_rows("Per Capita Income"):
-        name = normalize_name((row.get("A") or "").strip())
-        if not name or not valid_name(name):
-            continue
-        entry = upsert(name)
-        entry["per_capita_income"] = round_or_none(to_float(row.get("D")), 1)
 
     for row in workbook.sheet_rows("Poverty Rates"):
         name = normalize_name((row.get("A") or "").strip())
         if not name or not valid_name(name):
             continue
         entry = upsert(name)
-        entry["poverty_population"] = round_or_none(to_float(row.get("B")), 0)
-        entry["poverty_total"] = round_or_none(to_float(row.get("C")), 0)
         entry["poverty_rate"] = round_or_none(to_float(row.get("D")), 4)
-
-    for row in workbook.sheet_rows("Race"):
-        name = normalize_name((row.get("A") or "").strip())
-        if not name or not valid_name(name):
-            continue
-        entry = upsert(name)
-        entry["race_population"] = round_or_none(to_float(row.get("B")), 0)
-        entry["white_pct"] = round_or_none(to_float(row.get("D")), 4)
-        entry["black_pct"] = round_or_none(to_float(row.get("F")), 4)
-        entry["hispanic_pct"] = round_or_none(to_float(row.get("H")), 4)
-        entry["asian_pct"] = round_or_none(to_float(row.get("J")), 4)
 
     return metrics
 
@@ -334,109 +287,20 @@ def assign_neighborhood(point: tuple[float, float], neighborhoods: list[dict]) -
     return None
 
 
-def aggregate_open_space(neighborhoods: list[dict], open_space: dict) -> dict[str, dict]:
-    aggregates = defaultdict(lambda: {"open_space_acres": 0.0, "open_space_count": 0})
-    for feature in open_space["features"]:
-        point = geometry_centroid(feature["geometry"])
-        name = assign_neighborhood(point, neighborhoods)
-        if not name:
-            continue
-        aggregates[name]["open_space_acres"] += to_float(feature["properties"].get("ACRES")) or 0.0
-        aggregates[name]["open_space_count"] += 1
-    return aggregates
-
-
-def aggregate_vulnerability(neighborhoods: list[dict], vulnerability: dict) -> tuple[dict[str, dict], list[str]]:
-    aggregates = defaultdict(
-        lambda: {
-            "population": 0.0,
-            "disabled_total": 0.0,
-            "older_total": 0.0,
-            "lep_total": 0.0,
-            "poc_total": 0.0,
-            "low_vehicle_total": 0.0,
-            "med_illness_total": 0.0,
-            "tract_count": 0,
-        }
-    )
-    unmatched: list[str] = []
-    for feature in vulnerability["features"]:
-        properties = feature["properties"]
-        point = geometry_centroid(feature["geometry"])
-        name = assign_neighborhood(point, neighborhoods)
-        if not name:
-            name = normalize_name(properties.get("Name"))
-        if not name:
-            unmatched.append(str(properties.get("GEOID10")))
-            continue
-        entry = aggregates[name]
-        entry["population"] += to_float(properties.get("POP100_RE")) or 0.0
-        entry["disabled_total"] += to_float(properties.get("TotDis")) or 0.0
-        entry["older_total"] += to_float(properties.get("OlderAdult")) or 0.0
-        entry["lep_total"] += to_float(properties.get("LEP")) or 0.0
-        entry["poc_total"] += to_float(properties.get("POC2")) or 0.0
-        entry["low_vehicle_total"] += to_float(properties.get("Low_to_No")) or 0.0
-        entry["med_illness_total"] += to_float(properties.get("MedIllnes")) or 0.0
-        entry["tract_count"] += 1
-
-    finalized = {}
-    for name, entry in aggregates.items():
-        population = entry["population"] or 0.0
-        if population > 0:
-            entry["disabled_share"] = round_or_none(entry["disabled_total"] / population, 4)
-            entry["older_share"] = round_or_none(entry["older_total"] / population, 4)
-            entry["lep_share"] = round_or_none(entry["lep_total"] / population, 4)
-            entry["poc_share"] = round_or_none(entry["poc_total"] / population, 4)
-            entry["low_vehicle_share"] = round_or_none(entry["low_vehicle_total"] / population, 4)
-        else:
-            entry["disabled_share"] = None
-            entry["older_share"] = None
-            entry["lep_share"] = None
-            entry["poc_share"] = None
-            entry["low_vehicle_share"] = None
-        entry["population"] = round_or_none(population, 0)
-        entry["med_illness_total"] = round_or_none(entry["med_illness_total"], 2)
-        finalized[name] = entry
-    return finalized, unmatched
-
-
 def extract_heat_metadata() -> dict:
     heat_metadata = {}
     for key, config in HEAT_LAYER_CONFIG.items():
-        raw_xml = subprocess.check_output(
-            ["bsdtar", "-xOf", str(config["package"]), "esriinfo/iteminfo.xml"],
-            cwd=ROOT,
-            text=True,
-        )
-        root = ET.fromstring(raw_xml)
-        description = (root.findtext("description") or "").strip().replace("\n\n", "\n")
-        xmin = to_float(root.findtext("./extent/xmin"))
-        ymin = to_float(root.findtext("./extent/ymin"))
-        xmax = to_float(root.findtext("./extent/xmax"))
-        ymax = to_float(root.findtext("./extent/ymax"))
         heat_metadata[key] = {
             "label": config["label"],
             "portalItemId": config["portal_item_id"],
             "serviceItemId": config["service_item_id"],
             "serviceName": config["service_name"],
             "serviceUrl": f"{HEAT_SERVICE_ROOT}/{config['service_name']}/MapServer",
-            "bounds": [[round_or_none(ymin, 6), round_or_none(xmin, 6)], [round_or_none(ymax, 6), round_or_none(xmax, 6)]],
-            "description": description,
             "tileUrl": f"{HEAT_SERVICE_ROOT}/{config['service_name']}/MapServer/tile/{{z}}/{{y}}/{{x}}",
             "attribution": "Climate Ready Boston",
             "mode": "tile",
         }
 
-    if HEAT_TILE_URLS_PATH.exists():
-        overrides = json.loads(HEAT_TILE_URLS_PATH.read_text())
-        for key, override in overrides.items():
-            if key in heat_metadata:
-                if "tileUrl" in override:
-                    heat_metadata[key]["tileUrl"] = override.get("tileUrl")
-                heat_metadata[key]["attribution"] = override.get("attribution") or heat_metadata[key]["attribution"]
-                heat_metadata[key]["mode"] = override.get("mode") or "tile"
-                if "serviceUrl" in override:
-                    heat_metadata[key]["serviceUrl"] = override.get("serviceUrl")
     return heat_metadata
 
 
@@ -492,8 +356,6 @@ def build_neighborhood_features(
     boundaries: dict,
     canopy: dict,
     acs_metrics: dict[str, dict],
-    vulnerability_metrics: dict[str, dict],
-    open_space_metrics: dict[str, dict],
     heat_metrics: dict[str, dict],
 ) -> list[dict]:
     canopy_by_name = {
@@ -506,8 +368,6 @@ def build_neighborhood_features(
         name = normalize_name(feature["properties"]["name"])
         canopy_props = canopy_by_name.get(name, {})
         acs_props = acs_metrics.get(name, {})
-        vulnerability_props = vulnerability_metrics.get(name, {})
-        open_space_props = open_space_metrics.get(name, {})
         heat_props = heat_metrics.get(name, {})
         acs_available = name not in MISSING_ACS_NAMES and bool(acs_props)
 
@@ -517,38 +377,10 @@ def build_neighborhood_features(
             "acres": round_or_none(to_float(feature["properties"].get("acres")), 2),
             "sqmiles": round_or_none(to_float(feature["properties"].get("sqmiles")), 2),
             "canopy_pct": round_or_none(to_float(canopy_props.get("Can_P")), 2),
-            "impervious_pct": round_or_none(to_float(canopy_props.get("Imperv_P")), 2),
-            "canopy_change_relative_pct": round_or_none(to_float(canopy_props.get("Change_Per")), 2),
-            "canopy_change_pp": round_or_none(to_float(canopy_props.get("Change_P_1")), 2),
             "median_household_income": acs_props.get("median_household_income"),
-            "per_capita_income": acs_props.get("per_capita_income"),
             "poverty_rate": acs_props.get("poverty_rate"),
-            "white_pct": acs_props.get("white_pct"),
-            "black_pct": acs_props.get("black_pct"),
-            "hispanic_pct": acs_props.get("hispanic_pct"),
-            "asian_pct": acs_props.get("asian_pct"),
-            "vulnerability_population": vulnerability_props.get("population"),
-            "disabled_share": vulnerability_props.get("disabled_share"),
-            "older_share": vulnerability_props.get("older_share"),
-            "lep_share": vulnerability_props.get("lep_share"),
-            "poc_share": vulnerability_props.get("poc_share"),
-            "low_vehicle_share": vulnerability_props.get("low_vehicle_share"),
-            "vulnerability_tract_count": vulnerability_props.get("tract_count"),
-            "open_space_acres": round_or_none(open_space_props.get("open_space_acres"), 2),
-            "open_space_count": open_space_props.get("open_space_count"),
             "uhi_mean_f": round_or_none(to_float(heat_props.get("uhi_mean_f")), 3),
-            "uhi_max_f": round_or_none(to_float(heat_props.get("uhi_max_f")), 3),
-            "day_3pm_mean_f": round_or_none(to_float(heat_props.get("day_3pm_mean_f")), 3),
-            "night_3am_mean_f": round_or_none(to_float(heat_props.get("night_3am_mean_f")), 3),
-            "heat_duration_mean": round_or_none(to_float(heat_props.get("heat_duration_mean")), 3),
             "heat_available": bool(heat_props.get("heat_available")),
-            "heat_approximation_method": heat_props.get("approximation_method"),
-            "heat_tile_lod": heat_props.get("heat_tile_lod"),
-            "heat_sample_stride": heat_props.get("heat_sample_stride"),
-            "uhi_sample_count": heat_props.get("uhi_sample_count"),
-            "day3pm_sample_count": heat_props.get("day3pm_sample_count"),
-            "night3am_sample_count": heat_props.get("night3am_sample_count"),
-            "duration_sample_count": heat_props.get("duration_sample_count"),
             "acs_available": acs_available,
         }
         features.append(
@@ -600,7 +432,6 @@ def write_json(path: Path, payload: dict) -> None:
 def build_story_stats(
     neighborhoods: list[dict],
     heat_layers: dict,
-    unmatched_tracts: list[str],
 ) -> dict:
     acs_missing = [
         feature["properties"]["name"]
@@ -620,22 +451,11 @@ def build_story_stats(
         "heatStatsAvailable": heat_stats_available,
         "heatLayers": heat_layers,
         "mapBounds": bbox_for_features(neighborhoods),
-        "unmatchedVulnerabilityTracts": unmatched_tracts,
         "highlights": {
             "highestCanopy": top_feature(neighborhoods, "canopy_pct", descending=True),
-            "mostImpervious": top_feature(neighborhoods, "impervious_pct", descending=True),
             "lowestIncome": top_feature(neighborhoods, "median_household_income", descending=False),
             "highestPoverty": top_feature(neighborhoods, "poverty_rate", descending=True),
             "highestUhi": top_feature(neighborhoods, "uhi_mean_f", descending=True),
-            "hottestDay": top_feature(neighborhoods, "day_3pm_mean_f", descending=True),
-            "warmestNight": top_feature(neighborhoods, "night_3am_mean_f", descending=True),
-            "longestHeatDuration": top_feature(neighborhoods, "heat_duration_mean", descending=True),
-            "highestDisabledShare": top_feature(
-                neighborhoods,
-                "disabled_share",
-                descending=True,
-                predicate=lambda feature: (feature["properties"].get("vulnerability_population") or 0) >= 1000,
-            ),
         },
     }
 
@@ -645,7 +465,6 @@ def main() -> None:
 
     boundaries = load_json(BOUNDARIES_PATH)
     canopy = load_json(CANOPY_PATH)
-    vulnerability = load_json(VULNERABILITY_PATH)
     open_space = load_json(OPEN_SPACE_PATH)
 
     neighborhoods = boundaries["features"]
@@ -653,8 +472,6 @@ def main() -> None:
         feature["_bbox"] = feature_bbox(feature)
 
     acs_metrics = parse_acs_metrics()
-    open_space_metrics = aggregate_open_space(neighborhoods, open_space)
-    vulnerability_metrics, unmatched_tracts = aggregate_vulnerability(neighborhoods, vulnerability)
     heat_layers = extract_heat_metadata()
     heat_metrics = load_heat_approximation()
 
@@ -662,15 +479,13 @@ def main() -> None:
         boundaries,
         canopy,
         acs_metrics,
-        vulnerability_metrics,
-        open_space_metrics,
         heat_metrics,
     )
     for feature in neighborhood_features:
         feature["_bbox"] = feature_bbox(feature)
 
     open_space_features = build_open_space_features(neighborhood_features, open_space)
-    story_stats = build_story_stats(neighborhood_features, heat_layers, unmatched_tracts)
+    story_stats = build_story_stats(neighborhood_features, heat_layers)
 
     write_geojson(PUBLIC_DATA_DIR / "neighborhoods_enriched.geojson", neighborhood_features)
     write_geojson(PUBLIC_DATA_DIR / "open_space_simplified.geojson", open_space_features)

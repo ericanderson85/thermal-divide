@@ -4,9 +4,7 @@ import StoryMap from './components/StoryMap'
 import StorySidebar from './components/StorySidebar'
 import {
   buildStorySteps,
-  COMPARISON_OPTIONS,
   getStoryViewId,
-  LAYER_OPTIONS,
   VIEW_PRESETS,
 } from './config/views'
 
@@ -26,10 +24,7 @@ export default function App() {
     openSpace: null,
     stats: null,
   })
-  const [activeStepId, setActiveStepId] = useState('overview')
-  const [exploreMode, setExploreMode] = useState(false)
-  const [selectedLayer, setSelectedLayer] = useState('uhi')
-  const [comparisonMetric, setComparisonMetric] = useState('uhi')
+  const [activeStepId, setActiveStepId] = useState('heat')
   const [hoveredName, setHoveredName] = useState(null)
   const [selectedName, setSelectedName] = useState(null)
 
@@ -75,23 +70,15 @@ export default function App() {
   }, [])
 
   const stats = dataset.stats
-  const storySteps = buildStorySteps(stats)
   const neighborhoods = dataset.neighborhoods?.features || []
+  const storySteps = buildStorySteps(stats)
   const openSpace = dataset.openSpace?.features || []
 
-  const currentViewId = exploreMode
-    ? selectedLayer
-    : getStoryViewId(activeStepId, storySteps)
+  const currentViewId = getStoryViewId(activeStepId, storySteps)
   const currentView = VIEW_PRESETS[currentViewId] || VIEW_PRESETS.overview
   const deferredHoveredName = useDeferredValue(hoveredName)
   const activeName = selectedName || deferredHoveredName
-  const activeFeature =
-    neighborhoods.find((feature) => feature.properties.name === activeName) || null
   const heatStatsAvailable = Boolean(stats?.heatStatsAvailable)
-  const activeComparisonMetric =
-    exploreMode && COMPARISON_OPTIONS.some((option) => option.value === selectedLayer)
-      ? selectedLayer
-      : comparisonMetric
 
   if (dataset.loading) {
     return (
@@ -99,7 +86,7 @@ export default function App() {
         <div className="status-card">
           <p className="eyebrow">Loading</p>
           <h1>The Thermal Divide</h1>
-          <p>Preparing the Boston neighborhood story map.</p>
+          <p>Preparing the Boston neighborhood map.</p>
         </div>
       </main>
     )
@@ -110,7 +97,7 @@ export default function App() {
       <main className="app-shell loading-shell">
         <div className="status-card error">
           <p className="eyebrow">Data Error</p>
-          <h1>Unable to load the story assets</h1>
+          <h1>Unable to load the map assets</h1>
           <p>{dataset.error}</p>
           <p>Run `npm run prepare:data` to regenerate the public data outputs.</p>
         </div>
@@ -124,32 +111,24 @@ export default function App() {
         <div className="story-column">
           <StorySidebar
             steps={storySteps}
-            stats={stats}
             activeStepId={activeStepId}
             onStepChange={(stepId) => {
               startTransition(() => {
                 setActiveStepId(stepId)
               })
             }}
-            exploreMode={exploreMode}
-            selectedLayer={selectedLayer}
-            setExploreMode={setExploreMode}
-            setSelectedLayer={setSelectedLayer}
-            layerOptions={LAYER_OPTIONS}
-            activeFeature={activeFeature}
-            onClearSelection={() => setSelectedName(null)}
+            relationships={
+              <ComparisonChart
+                embedded
+                neighborhoods={neighborhoods}
+                heatStatsAvailable={heatStatsAvailable}
+                activeName={activeName}
+                onSelectName={(name) => {
+                  setSelectedName((current) => (current === name ? null : name))
+                }}
+              />
+            }
           />
-
-          {(exploreMode || activeStepId === 'comparison') && (
-            <ComparisonChart
-              neighborhoods={neighborhoods}
-              heatStatsAvailable={heatStatsAvailable}
-              activeName={activeName}
-              onSelectName={setSelectedName}
-              comparisonMetric={activeComparisonMetric}
-              onComparisonMetricChange={setComparisonMetric}
-            />
-          )}
         </div>
 
         <div className="visual-column">
@@ -164,6 +143,7 @@ export default function App() {
             onSelectName={(name) => {
               setSelectedName((current) => (current === name ? null : name))
             }}
+            onClearSelection={() => setSelectedName(null)}
           />
         </div>
       </div>

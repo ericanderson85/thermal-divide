@@ -1,9 +1,8 @@
-import { useEffect, useEffectEvent, useMemo, useRef } from 'react'
+import { useEffect, useEffectEvent, useRef } from 'react'
 import * as d3 from 'd3'
 import L from 'leaflet'
 import {
   formatCurrency,
-  formatHours,
   formatPercent,
   formatPercentPoints,
   formatTemperature,
@@ -27,18 +26,6 @@ function getInterpolator(palette) {
   switch (palette) {
     case 'greens':
       return d3.interpolateYlGn
-    case 'slate':
-      return d3.interpolateGreys
-    case 'income':
-      return d3.interpolatePuBuGn
-    case 'blue':
-      return d3.interpolateBlues
-    case 'purple':
-      return d3.interpolateBuPu
-    case 'teal':
-      return d3.interpolateGnBu
-    case 'sunset':
-      return d3.interpolateYlOrBr
     case 'warm':
     default:
       return d3.interpolateYlOrRd
@@ -142,7 +129,7 @@ function buildLegend(view, neighborhoods, heatLayer) {
 
   let note = 'Gray = no data'
   if (view.mode === 'heat' && heatLayer?.tileUrl) {
-    note = 'Overlay shows the official heat tiles; polygon color summarizes neighborhood averages.'
+    note = 'Heat tiles are the backdrop; neighborhood fills summarize the same surface.'
   }
 
   return {
@@ -152,21 +139,15 @@ function buildLegend(view, neighborhoods, heatLayer) {
   }
 }
 
-function neighborhoodDetails(properties) {
+function detailRows(properties) {
   if (!properties) {
     return []
   }
   return [
-    ['Urban heat island', formatTemperature(properties.uhi_mean_f)],
-    ['3PM temperature', formatTemperature(properties.day_3pm_mean_f)],
-    ['3AM temperature', formatTemperature(properties.night_3am_mean_f)],
-    ['Heat duration', formatHours(properties.heat_duration_mean)],
+    ['Heat island', formatTemperature(properties.uhi_mean_f)],
     ['Tree canopy', formatPercentPoints(properties.canopy_pct, 1)],
-    ['Impervious surface', formatPercentPoints(properties.impervious_pct, 1)],
-    ['Median income', formatCurrency(properties.median_household_income)],
     ['Poverty rate', formatPercent(properties.poverty_rate)],
-    ['Disability share', formatPercent(properties.disabled_share)],
-    ['Open-space acres', properties.open_space_acres == null ? 'No data' : `${properties.open_space_acres.toFixed(1)} ac`],
+    ['Median income', formatCurrency(properties.median_household_income)],
   ]
 }
 
@@ -179,6 +160,7 @@ export default function StoryMap({
   selectedName,
   onHoverName,
   onSelectName,
+  onClearSelection,
 }) {
   const containerRef = useRef(null)
   const mapRef = useRef(null)
@@ -189,14 +171,6 @@ export default function StoryMap({
   const handleHoverName = useEffectEvent(onHoverName)
   const handleSelectName = useEffectEvent(onSelectName)
 
-  const activeFeature = useMemo(
-    () =>
-      neighborhoods.find((feature) => feature.properties.name === selectedName) ||
-      neighborhoods.find((feature) => feature.properties.name === activeName) ||
-      null,
-    [activeName, neighborhoods, selectedName],
-  )
-
   useEffect(() => {
     if (!containerRef.current || mapRef.current) {
       return
@@ -205,8 +179,14 @@ export default function StoryMap({
     let resizeFrame = null
     const map = L.map(containerRef.current, {
       zoomControl: false,
-      attributionControl: true,
+      attributionControl: false,
+      dragging: false,
       scrollWheelZoom: false,
+      doubleClickZoom: false,
+      boxZoom: false,
+      keyboard: false,
+      touchZoom: false,
+      tap: false,
     })
 
     map.createPane('heatPane')
@@ -216,7 +196,6 @@ export default function StoryMap({
     map.createPane('boundaryPane')
     map.getPane('boundaryPane').style.zIndex = '420'
 
-    L.control.zoom({ position: 'topright' }).addTo(map)
     L.tileLayer(BASE_TILE_URL, {
       attribution: BASE_TILE_ATTRIBUTION,
       opacity: 0.88,
@@ -412,12 +391,15 @@ export default function StoryMap({
 
   const heatLayer = stats?.heatLayers?.[view.heatKey]
   const legend = buildLegend(view, neighborhoods, heatLayer)
+  const selectedFeature =
+    neighborhoods.find((feature) => feature.properties.name === selectedName) || null
+
   return (
     <div className="map-card">
       <div className="map-stage" ref={containerRef} />
 
       <div className="map-caption">
-        <p className="eyebrow">Map View</p>
+        <p className="eyebrow">Layer</p>
         <h3>{view.label}</h3>
         <p>{view.description}</p>
         {view.mode === 'heat' ? (
@@ -442,20 +424,37 @@ export default function StoryMap({
         {legend.note ? <p className="legend-footnote">{legend.note}</p> : null}
       </div>
 
-      <div className="map-info">
-        <p className="eyebrow">Neighborhood</p>
-        <h3>{activeFeature?.properties?.name || 'Hover a place'}</h3>
-        {activeFeature?.properties?.acs_available === false ? (
-          <p className="inline-note">ACS metrics are unavailable for this neighborhood.</p>
-        ) : null}
-        <dl>
-          {neighborhoodDetails(activeFeature?.properties).map(([label, value]) => (
-            <div key={label} className="info-row">
-              <dt>{label}</dt>
-              <dd>{value}</dd>
-            </div>
-          ))}
-        </dl>
+      <div className="map-selection">
+        <div className="map-selection-header">
+          <div>
+            <p className="eyebrow">Neighborhood</p>
+            <h3>{selectedFeature?.properties?.name || 'Click a neighborhood'}</h3>
+          </div>
+          {selectedFeature ? (
+            <button type="button" className="ghost-button" onClick={onClearSelection}>
+              Clear
+            </button>
+          ) : null}
+        </div>
+        {selectedFeature ? (
+          <>
+            {selectedFeature.properties.acs_available === false ? (
+              <p className="inline-note">
+                ACS income and poverty metrics are unavailable for this neighborhood.
+              </p>
+            ) : null}
+            <dl>
+              {detailRows(selectedFeature.properties).map(([label, value]) => (
+                <div className="detail-row" key={label}>
+                  <dt>{label}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </>
+        ) : (
+          <p>Click the map or a chart point to pin details. Clear returns the map to Boston.</p>
+        )}
       </div>
     </div>
   )
