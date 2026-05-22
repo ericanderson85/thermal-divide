@@ -9,9 +9,9 @@ import {
 } from './config/views'
 
 async function fetchJson(url) {
-  const response = await fetch(url)
+  const response = await fetch(`${import.meta.env.BASE_URL}${url}`)
   if (!response.ok) {
-    throw new Error(`Failed to load ${url} (${response.status})`)
+    throw new Error(`Failed to load ${import.meta.env.BASE_URL}${url} (${response.status})`)
   }
   return response.json()
 }
@@ -34,9 +34,9 @@ export default function App() {
     async function loadData() {
       try {
         const [neighborhoods, openSpace, stats] = await Promise.all([
-          fetchJson('/data/neighborhoods_enriched.geojson'),
-          fetchJson('/data/open_space_simplified.geojson'),
-          fetchJson('/data/story_stats.json'),
+          fetchJson('data/neighborhoods_enriched.geojson'),
+          fetchJson('data/open_space_simplified.geojson'),
+          fetchJson('data/story_stats.json'),
         ])
 
         if (cancelled) {
